@@ -7,7 +7,9 @@ import { AppShell } from "@/components/AppShell";
 import { TeacherOrb } from "@/components/TeacherOrb";
 import { UploadCard } from "@/components/UploadCard";
 import { ProcessingOverlay } from "@/components/ProcessingOverlay";
+import { SampleFilesMenu } from "@/components/SampleFilesMenu";
 import { uploadFiles, extractQuestionsStep, extractAnswersStep, gradeStep } from "@/lib/api";
+import { QUESTION_PAPER_SAMPLE_URL, fetchSampleFile, type SampleVariant } from "@/lib/samples";
 import type { ProcessingStage } from "@/types";
 
 export default function UploadPage() {
@@ -16,9 +18,27 @@ export default function UploadPage() {
   const [answerSheet, setAnswerSheet] = useState<File | null>(null);
   const [stage, setStage] = useState<ProcessingStage>("idle");
   const [error, setError] = useState<string | undefined>();
+  const [loadingSampleId, setLoadingSampleId] = useState<string | null>(null);
 
   const canStart = !!questionPaper && !!answerSheet && stage === "idle";
   const isProcessing = stage !== "idle" && stage !== "error";
+
+  async function handleSelectSample(variant: SampleVariant) {
+    setError(undefined);
+    setLoadingSampleId(variant.id);
+    try {
+      const [qp, as] = await Promise.all([
+        fetchSampleFile(QUESTION_PAPER_SAMPLE_URL, "question-paper.pdf"),
+        fetchSampleFile(variant.answerSheetUrl, `answer-sheet-${variant.id}.pdf`),
+      ]);
+      setQuestionPaper(qp);
+      setAnswerSheet(as);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load sample files.");
+    } finally {
+      setLoadingSampleId(null);
+    }
+  }
 
   async function handleStartMapping() {
     if (!questionPaper || !answerSheet) return;
@@ -57,6 +77,9 @@ export default function UploadPage() {
                 <span className="underline decoration-2 underline-offset-4">Q</span>uestion Paper &amp; Answer Sheets
               </span>
               <p className="text-veda-gray-500 mt-3 text-[15px]">Upload both files to get started</p>
+              <div className="mt-4 flex justify-center">
+                <SampleFilesMenu onSelect={handleSelectSample} loadingId={loadingSampleId} />
+              </div>
             </div>
 
             <TeacherOrb />
