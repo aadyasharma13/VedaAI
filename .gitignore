@@ -36,6 +36,10 @@ yarn-error.log*
 # vercel
 .vercel
 
+# dev-only tooling (asset generation, screenshot verification scripts) —
+# not part of the shipped product
+/.scripts/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
