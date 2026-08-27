@@ -5,7 +5,7 @@ A teacher uploads a question paper and one student's handwritten answer sheet. T
 ## Live demo
 
 - **App:** https://app-xi-six-0a7avqu59i.vercel.app
-- **Repo:** _add your GitHub URL here_
+- **Repo:** https://github.com/aadyasharma13/VedaAI
 
 ## Approach
 
