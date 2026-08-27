@@ -1,52 +1,67 @@
-import type { PageImage, SessionData } from "@/types";
+import { Redis } from "@upstash/redis";
+import type { SessionData } from "@/types";
 
-// In-memory only, per assignment constraints (no DB). This means state is lost
-// on server restart and does not survive across multiple serverless instances —
-// acceptable for this assignment's scope (single dev/demo deployment).
+// Session metadata (questions, answers, grades — all small JSON) lives in
+// Upstash Redis so it survives across the independent serverless function
+// instances a Vercel deployment may route requests to; a plain in-memory Map
+// only works within a single long-running process; two separate route
+// invocations for the same session are not guaranteed to land on the same
+// instance. Page images are NOT stored here — they're uploaded to Vercel
+// Blob and only their pathnames are kept in this record (see blob.ts).
 
-interface InternalSession extends SessionData {
-  questionPaperImages: PageImage[];
-  answerSheetImages: PageImage[];
+const SESSION_TTL_SECONDS = 2 * 60 * 60; // 2 hours
+
+export interface StoredPageRef {
+  page: number;
+  width: number;
+  height: number;
+  blobPathname: string;
 }
 
-const sessions = new Map<string, InternalSession>();
+export interface InternalSession extends Omit<SessionData, "questionPaperPages" | "answerSheetPages"> {
+  questionPaperPages?: { width: number; height: number }[];
+  answerSheetPages?: { width: number; height: number }[];
+  questionPaperImageRefs: StoredPageRef[];
+  answerSheetImageRefs: StoredPageRef[];
+}
 
-export function createSession(id: string): InternalSession {
+function redis() {
+  return Redis.fromEnv();
+}
+
+function key(id: string) {
+  return `session:${id}`;
+}
+
+export async function createSession(id: string): Promise<InternalSession> {
   const session: InternalSession = {
     id,
     createdAt: Date.now(),
     stage: "idle",
-    questionPaperImages: [],
-    answerSheetImages: [],
+    questionPaperImageRefs: [],
+    answerSheetImageRefs: [],
   };
-  sessions.set(id, session);
+  await redis().set(key(id), session, { ex: SESSION_TTL_SECONDS });
   return session;
 }
 
-export function getSession(id: string): InternalSession | undefined {
-  return sessions.get(id);
+export async function getSession(id: string): Promise<InternalSession | undefined> {
+  const session = await redis().get<InternalSession>(key(id));
+  return session ?? undefined;
 }
 
-export function updateSession(id: string, patch: Partial<InternalSession>): InternalSession | undefined {
-  const existing = sessions.get(id);
+export async function updateSession(id: string, patch: Partial<InternalSession>): Promise<InternalSession | undefined> {
+  const existing = await getSession(id);
   if (!existing) return undefined;
   const updated = { ...existing, ...patch };
-  sessions.set(id, updated);
+  // Refresh TTL on every write so an active session doesn't expire mid-flow.
+  await redis().set(key(id), updated, { ex: SESSION_TTL_SECONDS });
   return updated;
 }
 
-/** Strips internal image buffers before sending session state to the client. */
+/** Strips internal blob refs before sending session state to the client. */
 export function toPublic(session: InternalSession): SessionData {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to exclude from the public shape
-  const { questionPaperImages, answerSheetImages, ...pub } = session;
+  const { questionPaperImageRefs, answerSheetImageRefs, ...pub } = session;
   return pub;
 }
-
-// Periodically evict sessions older than 2 hours to bound memory growth.
-const TWO_HOURS = 2 * 60 * 60 * 1000;
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, s] of sessions) {
-    if (now - s.createdAt > TWO_HOURS) sessions.delete(id);
-  }
-}, 30 * 60 * 1000).unref?.();

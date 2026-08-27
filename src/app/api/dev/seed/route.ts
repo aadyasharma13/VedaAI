@@ -2,9 +2,11 @@ import { NextResponse } from "next/server";
 import { v4 as uuid } from "uuid";
 import { createSession, updateSession, toPublic } from "@/lib/store";
 import { fileToPageImages } from "@/lib/pdf";
+import { uploadPageImage } from "@/lib/blob";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { AnswerMapping, GradeResult, OverallFeedback, Question } from "@/types";
+import type { StoredPageRef } from "@/lib/store";
 
 // DEV-ONLY: seeds a session with a real rendered image (reused as a stand-in
 // answer sheet) plus fabricated question/answer/grade data, so the workspace
@@ -24,7 +26,16 @@ export async function POST() {
   const pageImages = [images[0], { ...images[0], page: 2 }];
 
   const id = uuid();
-  createSession(id);
+  await createSession(id);
+
+  const pageRefs: StoredPageRef[] = await Promise.all(
+    pageImages.map(async (img) => ({
+      page: img.page,
+      width: img.width,
+      height: img.height,
+      blobPathname: await uploadPageImage(id, "answer-sheet", img.page, img.dataUrl),
+    })),
+  );
 
   const questions: Question[] = [
     { id: "q-1", displayNumber: "1", baseNumber: "1", subpart: null, text: "Define Newton's second law of motion.", maxMarks: 5, page: 1, order: 0 },
@@ -112,17 +123,17 @@ export async function POST() {
       "The student shows strong grasp of mechanics (Q1, Q11) but left both biology questions unattempted. One unmatched scribble was found on page 2 that doesn't correspond to any question — worth a manual look.",
   };
 
-  const session = updateSession(id, {
+  const session = await updateSession(id, {
     stage: "done",
-    questionPaperImages: pageImages,
-    answerSheetImages: pageImages,
+    questionPaperImageRefs: pageRefs,
+    answerSheetImageRefs: pageRefs,
     questionPaperPages: pageImages.map((p) => ({ width: p.width, height: p.height })),
     answerSheetPages: pageImages.map((p) => ({ width: p.width, height: p.height })),
     questions,
     answers,
     grades,
     overall,
-  })!;
+  });
 
-  return NextResponse.json({ sessionId: id, session: toPublic(session) });
+  return NextResponse.json({ sessionId: id, session: toPublic(session!) });
 }

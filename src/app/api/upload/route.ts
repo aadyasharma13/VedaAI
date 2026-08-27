@@ -2,12 +2,26 @@ import { NextRequest, NextResponse } from "next/server";
 import { v4 as uuid } from "uuid";
 import { createSession, updateSession, toPublic } from "@/lib/store";
 import { fileToPageImages } from "@/lib/pdf";
+import { uploadPageImage } from "@/lib/blob";
+import type { PageImage } from "@/types";
+import type { StoredPageRef } from "@/lib/store";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const MAX_SIZE = 10 * 1024 * 1024; // 10MB, matches the UI copy
 const ALLOWED_TYPES = new Set(["application/pdf", "image/png", "image/jpeg", "image/webp"]);
+
+async function storePages(sessionId: string, kind: "question-paper" | "answer-sheet", images: PageImage[]): Promise<StoredPageRef[]> {
+  return Promise.all(
+    images.map(async (img) => ({
+      page: img.page,
+      width: img.width,
+      height: img.height,
+      blobPathname: await uploadPageImage(sessionId, kind, img.page, img.dataUrl),
+    })),
+  );
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -32,8 +46,8 @@ export async function POST(req: NextRequest) {
     }
 
     const id = uuid();
-    createSession(id);
-    updateSession(id, { stage: "converting" });
+    await createSession(id);
+    await updateSession(id, { stage: "converting" });
 
     const [qBuf, aBuf] = await Promise.all([
       questionPaper.arrayBuffer().then(Buffer.from),
@@ -48,24 +62,42 @@ export async function POST(req: NextRequest) {
       ]);
     } catch (err) {
       console.error("file conversion error", err);
-      updateSession(id, { stage: "error", error: "Could not read one of the files. It may be corrupted or password-protected." });
+      await updateSession(id, { stage: "error", error: "Could not read one of the files. It may be corrupted or password-protected." });
       return NextResponse.json({ error: "Failed to process uploaded files. They may be corrupted or password-protected." }, { status: 422 });
     }
 
     if (questionPaperImages.length === 0 || answerSheetImages.length === 0) {
-      updateSession(id, { stage: "error", error: "No pages could be read from one of the files." });
+      await updateSession(id, { stage: "error", error: "No pages could be read from one of the files." });
       return NextResponse.json({ error: "No pages could be read from one of the files." }, { status: 422 });
     }
 
-    const session = updateSession(id, {
+    // Extraction needs the raw image data (sent to Gemini) right away, so we
+    // keep questionPaperImages/answerSheetImages in-memory for this request
+    // and hand them to the extract-questions/extract-answers routes via
+    // Blob storage — those routes re-fetch bytes from Blob rather than
+    // relying on this request's memory, since a later request may land on a
+    // different serverless instance.
+    let questionPaperImageRefs, answerSheetImageRefs;
+    try {
+      [questionPaperImageRefs, answerSheetImageRefs] = await Promise.all([
+        storePages(id, "question-paper", questionPaperImages),
+        storePages(id, "answer-sheet", answerSheetImages),
+      ]);
+    } catch (err) {
+      console.error("blob upload error", err);
+      await updateSession(id, { stage: "error", error: "Failed to store uploaded pages." });
+      return NextResponse.json({ error: "Failed to store uploaded pages. Please try again." }, { status: 502 });
+    }
+
+    const session = await updateSession(id, {
       stage: "converting",
-      questionPaperImages,
-      answerSheetImages,
+      questionPaperImageRefs,
+      answerSheetImageRefs,
       questionPaperPages: questionPaperImages.map((p) => ({ width: p.width, height: p.height })),
       answerSheetPages: answerSheetImages.map((p) => ({ width: p.width, height: p.height })),
-    })!;
+    });
 
-    return NextResponse.json({ sessionId: id, session: toPublic(session) });
+    return NextResponse.json({ sessionId: id, session: toPublic(session!) });
   } catch (err) {
     console.error("upload error", err);
     return NextResponse.json({ error: "Unexpected server error while uploading." }, { status: 500 });

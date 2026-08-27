@@ -4,7 +4,7 @@ A teacher uploads a question paper and one student's handwritten answer sheet. T
 
 ## Live demo
 
-- **App:** _add your deployed Vercel URL here_
+- **App:** https://app-xi-six-0a7avqu59i.vercel.app
 - **Repo:** _add your GitHub URL here_
 
 ## Approach
@@ -17,7 +17,7 @@ A teacher uploads a question paper and one student's handwritten answer sheet. T
 4. **Reconciliation** — any question with zero matched answers is synthesized as `unanswered` server-side, so the UI always has one uniform list covering answered / unanswered / unmatched.
 5. **Grading** — question + transcribed-answer pairs are sent to Gemini for per-question scoring, verdict (correct/partial/incorrect/not attempted), and short feedback, plus one overall summary for the teacher.
 
-All state is in-memory (no database, per the assignment's constraints), keyed by an upload session id; page images are served back to the client via a dedicated route rather than embedded as base64 in JSON, and never leave the server in bulk.
+Session state (questions, answers, grades) is kept in a lightweight key-value store (Upstash Redis, free tier) rather than a real database, and page images are stored in Vercel Blob rather than embedded as base64 in the session record — necessary because Vercel's serverless functions don't share in-process memory across invocations, so a plain in-memory `Map` would randomly lose sessions mid-pipeline in production. Locally, everything still runs the same way against the same free-tier services (see "Running locally"). Page images are served back to the client via a dedicated, session-scoped route rather than shipped as base64 in JSON, and the underlying Blob store is private (no public URLs).
 
 ## AI model/API used
 
@@ -25,7 +25,7 @@ All state is in-memory (no database, per the assignment's constraints), keyed by
 
 ## Tech stack
 
-Next.js 16 (App Router) · TypeScript · Tailwind CSS v4 · `@google/genai` · `pdfjs-dist` + `@napi-rs/canvas` for server-side PDF rendering.
+Next.js 16 (App Router) · TypeScript · Tailwind CSS v4 · `@google/genai` · `pdfjs-dist` + `@napi-rs/canvas` for server-side PDF rendering · Upstash Redis (session state) · Vercel Blob (page images).
 
 ## Running locally
 
@@ -35,12 +35,14 @@ cp .env.example .env.local   # then add a free key from https://aistudio.google.
 npm run dev
 ```
 
+You'll also need `KV_REST_API_URL` / `KV_REST_API_TOKEN` (Upstash Redis) and `BLOB_READ_WRITE_TOKEN` (Vercel Blob) in `.env.local` — both are free-tier and easiest to provision via `vercel integration add upstash/upstash-kv` and `vercel blob create-store <name> --access private`, then `vercel env pull .env.local`.
+
 Open [http://localhost:3000](http://localhost:3000).
 
 ## Assumptions & limitations
 
 - **Single answer sheet per upload**, as specified in the assignment (not a batch of students).
-- **In-memory storage only** — state is lost on server restart and does not survive across multiple serverless instances; acceptable for this assignment's scope, not production-grade.
+- **No relational database** — session state lives in a key-value store (Redis) with a 2-hour TTL per session, not a persisted SQL/NoSQL database; there is no history, no auth, and nothing survives past that window, per the assignment's "no database" constraint.
 - **PDF page cap** — very large PDFs are capped at 12 pages per file to bound processing time and free-tier token usage.
 - **Free-tier rate limits** — Gemini's free tier caps requests per day/minute; heavy back-to-back testing can hit `429` errors. The app surfaces this as a clear error rather than failing silently, but repeated grading of many sheets in a short window on a single API key will eventually be rate-limited.
 - **Bounding-box precision** is model-dependent — the vision model's region boxes are generally tight but not pixel-perfect; they were validated to be visually correct across handwriting styles (clean, messy, faint pencil, off-ruled-line drift, mixed ink colors) but are an AI estimate, not an OCR-guaranteed coordinate.

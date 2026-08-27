@@ -32,6 +32,16 @@ async function renderPdfToImages(buffer: Buffer): Promise<PageImage[]> {
   // Legacy build works in Node without a DOM/worker.
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
 
+  // On serverless (Vercel), pdfjs's automatic worker-path detection can fail
+  // because the bundler traces/relocates files, breaking the relative import
+  // it uses to find pdf.worker.mjs. Resolving it explicitly avoids relying
+  // on that auto-detection.
+  if (!pdfjs.GlobalWorkerOptions.workerSrc) {
+    const { createRequire } = await import("node:module");
+    const require = createRequire(import.meta.url);
+    pdfjs.GlobalWorkerOptions.workerSrc = require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs");
+  }
+
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(buffer),
     useSystemFonts: true,
